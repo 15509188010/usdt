@@ -1,0 +1,105 @@
+<?php
+/**
+ * Created by PhpStorm.
+ * User: Admin
+ * Date: 2019/8/12
+ * Time: 21:08
+ */
+
+namespace App\HttpController\Manage;
+
+use App\HttpController\Base;
+use App\Utility\Pool\MysqlPool;
+use App\Utility\Pool\RedisPool;
+
+class User extends Base
+{
+    public $user = [];
+
+    public $page=1;
+
+    public $limit=10;
+
+    protected function onRequest(?string $action): ?bool
+    {
+        $token = $this->request()->getRequestParam('token');
+        $RedisPool = RedisPool::defer();
+        $user = $RedisPool->get('Manage_token_' . $token);
+        if (!$user) {
+            $this->response()->redirect("/Manage/login");
+            return false;
+        }
+        $this->user = json_decode($user, true);
+        $page=$this->request()->getRequestParam('page');
+        $limit=$this->request()->getRequestParam('limit');
+        if (isset($page)){
+            $this->page=$page;
+        }
+        if (isset($limit)){
+            $this->limit=$limit;
+        }
+        return true;
+    }
+
+    /**
+     * <methdo> GET
+     * <center> 会员首页页面
+     */
+    public function center()
+    {
+        return $this->render('User/center');
+    }
+
+    /**
+     * <method> POST
+     * <userList> 获取用户列表
+     * @return bool
+     * @throws \EasySwoole\Component\Pool\Exception\PoolEmpty
+     * @throws \EasySwoole\Component\Pool\Exception\PoolException
+     */
+    public function  userList()
+    {
+        $db = MysqlPool::defer();
+        var_dump([$this->page*$this->limit,$this->limit]);
+        $list = $db
+            ->join('user_money as m','u.id=m.uid')
+            ->where('status', 'online')
+            ->get('usdt_user as u',[$this->page*$this->limit,$this->limit],'u.username,u.id,u.ad_usdt,u.ad_dmr,m.usdt,m.dmr,m.u_onway,m.d_frozen');
+        if (empty($list)){
+            return $this->writeJson(10004,'没有数据');
+        }
+        $count=$db
+            ->join('user_money as m','u.id=m.uid')
+            ->where('status', 'online')->count('usdt_user as u',null,'u.id');
+
+        return $this->writeJson(0, 'SUCCESS', $list, $count);
+    }
+
+    /**
+     * OverWrite
+     * @param int $statusCode
+     * @param null $msg
+     * @param null $result
+     * @param int $count
+     * @return bool
+     */
+    protected function writeJson($statusCode = 200, $msg = null, $result = null, $count = 0)
+    {
+        if (!$this->response()->isEndResponse()) {
+            $data = [
+                "code" => $statusCode,
+                "data" => $result,
+                "msg" => $msg,
+                "count" => $count,
+            ];
+            $this->response()->write(json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+            $this->response()->withHeader('Content-type', 'application/json;charset=utf-8');
+            $this->response()->withHeader('Access-Control-Allow-Origin', "*");
+            $this->response()->withStatus(200);//http响应码
+            return true;
+        } else {
+            return false;
+        }
+    }
+
+}

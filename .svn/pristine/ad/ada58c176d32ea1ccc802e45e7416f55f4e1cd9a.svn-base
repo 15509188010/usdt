@@ -1,0 +1,202 @@
+<?php
+/**
+ * Created by PhpStorm.
+ * User: Administrator
+ * Date: 2019/8/11 0011
+ * Time: 下午 4:39
+ */
+
+namespace App\HttpController\Manage;
+
+use App\HttpController\Base;
+use App\Utility\Pool\MysqlPool;
+use App\Utility\Pool\RedisPool;
+use EasySwoole\Http\Message\Status;
+
+class Usdt extends Base
+{
+    public $user=[];
+
+    protected function onRequest(?string $action): ?bool
+    {
+        $token=$this->request()->getRequestParam('token');
+        $RedisPool = RedisPool::defer();
+        $user = $RedisPool->get('Manage_token_' . $token);
+        if (!$user) {
+            $this->response()->redirect("/Manage/login");
+            return false;
+        }
+        $this->user = json_decode($user, true);
+        return true;
+    }
+
+    /**
+     * <method> GET
+     * <into> 查询usdt转入的订单页面
+     */
+    public function into()
+    {
+        return $this->render('Usdt/into');
+    }
+
+    /**
+     * <orderList> 转入列表
+     * @return bool
+     * @throws \EasySwoole\Component\Pool\Exception\PoolEmpty
+     * @throws \EasySwoole\Component\Pool\Exception\PoolException
+     */
+    public function  orderList()
+    {
+        $db = MysqlPool::defer();
+        $list=$db->where('lx',1)
+            ->where('status',1)
+            ->orderBy('datetime', 'DESC')
+            ->get('usdt_order',null,'id,uid,ad_usdt,usdt,path,orderid,datetime,path');
+        if (empty($list)){
+            return $this->writeJson(10004,'没有数据');
+        }
+        $count=count($list);
+        return $this->writeJson(0,'SUCCESS',$list,$count);
+    }
+
+    /**
+     * <pass> POST
+     * <pass> 通过usdt转入
+     * @params id=>订单id
+     * @return bool
+     * @throws \EasySwoole\Component\Pool\Exception\PoolEmpty
+     * @throws \EasySwoole\Component\Pool\Exception\PoolException
+     */
+    public function pass()
+    {
+        $id = $this->request()->getRequestParam('id');
+        if (empty($id)){
+            return $this->writeJson(10004,'id非法!');
+        }
+        $db = MysqlPool::defer();
+        $info=$db->where('id',$id)->where('status',1)->where('lx',1)->getOne('usdt_order','usdt,uid,orderid');//转入订单信息
+        if (empty($info)){
+            return $this->writeJson(10004,'没有找到订单!');
+        }
+        $db->startTransaction();
+        /*****************************修改转入订单状态**********************************/
+        $order_up=[
+            'status'=>2,//通过审核
+            'datetime'=>date('Y-m-d H:i:s'),
+            'operator'=>$this->user['id'],//审核人id
+        ];
+        $res1=$db->where('id',$id)->update('usdt_order',$order_up);
+
+        /******************************增加转入人账户+usdt余额****************************/
+        $m_user=$db->where('uid',$info['uid'])->getOne('user_money','usdt');
+        $m_up=[
+            'usdt'=>bcadd($m_user['usdt'],$info['usdt'],4),//+usdt余额
+        ];
+        $res2=$db->where('uid',$info['uid'])->update('user_money',$m_up);
+
+        if ($res1 && $res2){
+            /*****************写流水转入记录***********************/
+            $orderid = $this->createId($info['uid'],$info['usdt']);//订单号
+            $add=[
+                'uid'=>$info['uid'],//用户id
+                'ymoney'=>$m_user['usdt'],//元usdt余额
+                'money'=>$info['usdt'],//变动数量
+                'gmoney'=>$m_up['usdt'],//变动后
+                'datetime'=>date('Y-m-d H:i:s'),
+                'transid'=> $orderid,//流水号
+                'orderid'=>$info['orderid'],//对应order表
+                'lx'=>1,//转入
+                'type'=>1,//1 usdt
+                't'=>1,//结算方式,非实时
+            ];
+            $db->insert('money_change',$add);
+            $db->commit();
+            return $this->writeJson(Status::CODE_OK,'SUCCESS');
+        }else{
+            $db->rollback();
+            return $this->writeJson(10004,'操作失败!');
+        }
+    }
+
+    /**
+     * <methid> POST
+     * <delEdit> 驳回编辑理由页面
+     * @return bool
+     * @throws \EasySwoole\Component\Pool\Exception\PoolEmpty
+     * @throws \EasySwoole\Component\Pool\Exception\PoolException
+     */
+    public function delEdit()
+    {
+        $id = $this->request()->getRequestParam('id');
+        if (empty($id)){
+            return $this->writeJson('10004','ERROR');
+        }
+        $db = MysqlPool::defer();
+        $info=$db->where('id',$id)->getOne('usdt_order','usdt,id,orderid');
+        return $this->render('Usdt/delEdit',['data'=>$info]);
+    }
+
+    /**
+     * <method> POST
+     * <del> 驳回转入usdt订单
+     * @return bool
+     * @throws \EasySwoole\Component\Pool\Exception\PoolEmpty
+     * @throws \EasySwoole\Component\Pool\Exception\PoolException
+     */
+    public function del()
+    {
+        $id = $this->request()->getRequestParam('id');
+        $content=$this->request()->getRequestParam('memo');
+        if (empty($id)){
+            return $this->writeJson(10004,'ERROR');
+        }
+        if (empty($content)){
+            return $this->writeJson(10004,'请输入驳回理由');
+        }
+        $db = MysqlPool::defer();
+        $exist=$db->where('id',$id)->where('status',1)->where('lx',1)->getOne('usdt_order','id');
+        if (empty($exist)){
+            return $this->writeJson(10004,'订单检索失败!');
+        }
+        $up=[
+            'datetime'=>date('Y-m-d H:i:s'),
+            'operator'=>$this->user['id'],//审核人员id
+            'status'=>3,//驳回转入
+            'contentstr'=>$content,//驳回理由
+        ];
+        $res=$db->where('id',$id)->update('usdt_order',$up);
+        if ($res){
+            return $this->writeJson(Status::CODE_OK,'操作成功');
+        }
+
+        return $this->writeJson(10004,'操作失败!');
+
+    }
+
+    /**
+     * OverWrite
+     * @param int $statusCode
+     * @param null $msg
+     * @param null $result
+     * @param int $count
+     * @return bool
+     */
+    protected function writeJson($statusCode = 200, $msg = null,$result = null,$count=0)
+    {
+        if (!$this->response()->isEndResponse()) {
+            $data = Array(
+                "code" => $statusCode,
+                "data" => $result,
+                "msg" => $msg,
+                "count"=>$count,
+            );
+            $this->response()->write(json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+            $this->response()->withHeader('Content-type', 'application/json;charset=utf-8');
+            $this->response()->withHeader('Access-Control-Allow-Origin',"*");
+            $this->response()->withStatus(200);//http响应码
+            return true;
+        } else {
+            return false;
+        }
+    }
+}

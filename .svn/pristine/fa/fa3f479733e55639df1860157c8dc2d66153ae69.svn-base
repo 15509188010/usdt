@@ -1,0 +1,31 @@
+<?php
+/**
+ * Created by PhpStorm.
+ * User: Administrator
+ * Date: 2019/8/11 0011
+ * Time: 下午 4:39
+ */
+
+namespace App\HttpController\Manage;
+
+use App\HttpController\Base;
+use App\Utility\Pool\MysqlPool;
+
+class Usdt extends Base
+{
+    /**
+     * <method> GET
+     * <into> 查询usdt转入的订单
+     */
+    public function into()
+    {
+        $params =  $this->request()->getRequestParam();
+        $page = isset($params['page']) ?? 1;
+        $db = MysqlPool::defer();
+
+        $list=$db->where('lx',1)
+            ->where('status',1)->orderBy('datetime', 'DESC')
+            ->get('usdt_order',[($page-1)*1,1],'id,uid,ad_usdt,usdt,path,orderid,datetime');
+        return $this->render('Usdt/into',['list'=>$list]);
+    }
+}

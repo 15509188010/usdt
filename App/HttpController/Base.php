@@ -1,0 +1,149 @@
+<?php
+/**
+ * Created by PhpStorm.
+ * User: Double-jin
+ * Date: 2019/6/19
+ * Email: 605932013@qq.com
+ */
+
+
+namespace App\HttpController;
+
+use App\Utility\PlatesRender;
+use EasySwoole\EasySwoole\Config;
+use EasySwoole\Http\AbstractInterface\Controller;
+use EasySwoole\Http\Message\Status;
+use EasySwoole\Template\Render;
+use App\Utility\Pool\MysqlPool;
+
+/**
+ * 基础控制器
+ * Class Base
+ * @package App\HttpController
+ */
+class Base extends Controller
+{
+    function index()
+    {
+        $this->actionNotFound('index');
+    }
+
+    /**
+     * 分离式渲染
+     * @param $template
+     * @param $vars
+     */
+    function render($template, array $vars = [])
+    {
+        $engine = new PlatesRender(EASYSWOOLE_ROOT . '/App/Views');
+        $render = Render::getInstance();
+        $render->getConfig()->setRender($engine);
+        $content = $engine->render($template, $vars);
+        $this->response()->write($content);
+    }
+
+    /**
+     * <onException> 用于错误时响应,可以在此处处理异常
+     * @param \Throwable $throwable
+     */
+//    protected function onException(\Throwable $throwable): void
+//    {
+//        //$this->writeJson(10004,'ERROR,未知错误');
+//    }
+
+    /**
+     * 获取配置值
+     * @param $name
+     * @param null $default
+     * @return array|mixed|null
+     */
+    function cfgValue($name, $default = null)
+    {
+        $value = Config::getInstance()->getConf($name);
+        return is_null($value) ? $default : $value;
+    }
+
+    protected function writeJson($statusCode = 200, $msg = null,$result = null)
+    {
+        if (!$this->response()->isEndResponse()) {
+            $data = Array(
+                "code" => $statusCode,
+                "data" => $result,
+                "msg" => $msg
+            );
+            $this->response()->write(json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+            $this->response()->withHeader('Content-type', 'application/json;charset=utf-8');
+            $this->response()->withHeader('Access-Control-Allow-Origin',"*");
+            $this->response()->withStatus(200);//http响应码
+            return true;
+        } else {
+            return false;
+        }
+    }
+
+    /**
+     * 时间+数量+用户+随机
+     * @param $uid
+     * @param $num
+     * @return string
+     */
+    protected function createId($uid,$num)
+    {
+        return date('YmdHis').'N'.intval($num).'U'.$uid.'S'.mt_rand(00, 99);
+    }
+
+    /**
+     * <editMoney> 平台收入核心代码
+     * @param $ser_money
+     * @param $type
+     * @param $uid
+     * @return bool
+     * @throws \EasySwoole\Component\Pool\Exception\PoolEmpty
+     * @throws \EasySwoole\Component\Pool\Exception\PoolException
+     */
+    protected function editMoney($ser_money, $type ,$uid)
+    {
+        /***********************增加平台分成***************************/
+        $db = MysqlPool::defer();
+        $plat_money=$db->where('id',1)->getOne('plat_money','money,u_money,d_money');
+
+        if ($type=='USDT'){
+            $m_up=[
+                'money'=>bcadd($plat_money['money'],$ser_money,4),//增加总额
+                'u_money'=>bcadd($plat_money['u_money'],$ser_money,4),//+usdt总额
+            ];
+            $add=[
+                'uid'=>$uid,
+                'bmoney'=>$ser_money,
+                'type'=>1,//usdt
+                'lx'=>2,//转出
+                'transid'=>'SERM'.$this->createId($uid,1),//交易流水号
+                'datetime'=>date('Y-m-d H:i:s'),
+            ];//分成流水记录
+        }elseif ($type=='DMR'){
+            $m_up=[
+                'money'=>bcadd($plat_money['money'],$ser_money,4),//增加总额
+                'd_money'=>bcadd($plat_money['d_money'],$ser_money,4),//+dmr总额
+            ];
+            $add=[
+                'uid'=>$uid,
+                'bmoney'=>$ser_money,
+                'type'=>2,//dmr
+                'lx'=>2,//转出
+                'transid'=>'SERM'.$this->createId($uid,1),//交易流水号
+                'datetime'=>date('Y-m-d H:i:s'),
+            ];//分成流水记录
+        }
+
+        $db->startTransaction();
+        $res1=$db->where('id',1)->update('plat_money',$m_up);
+        $res2=$db->insert('plat_log',$add);
+        if ($res1 && $res2){
+            $db->commit();
+            return true;
+        }else{
+            $db->rollback();
+            return false;
+        }
+    }
+}

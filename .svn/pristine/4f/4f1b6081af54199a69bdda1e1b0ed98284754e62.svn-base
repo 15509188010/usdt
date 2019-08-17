@@ -1,0 +1,21 @@
+<?php
+/**
+ * Created by PhpStorm.
+ * User: Administrator
+ * Date: 2019/8/11 0011
+ * Time: 下午 4:39
+ */
+
+namespace App\HttpController\Manage;
+
+use App\HttpController\Base;
+class Usdt extends  Base
+{
+    /**
+     * usdt转入
+     */
+    public function into()
+    {
+        return $this->render('Usdt/into');
+    }
+}

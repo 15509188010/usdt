@@ -1,0 +1,68 @@
+<?php
+/**
+ * Created by PhpStorm.
+ * User: Admin
+ * Date: 2019/8/9
+ * Time: 22:25
+ */
+
+namespace App\HttpController\Manage;
+
+use App\HttpController\Base;
+use EasySwoole\Validate\Validate;
+use App\Model\UserModel;
+use App\Utility\Pool\RedisObject;
+use App\Utility\Pool\RedisPool;
+
+class Index extends Base
+{
+    public function login()
+    {
+        if($this->request()->getMethod() == 'POST'){
+            $validate = new Validate();
+            $validate->addColumn('username')->required('用户名必填');
+            $validate->addColumn('password')->required('密码必填');
+            if ($this->validate($validate)) {
+                $params = $this->request()->getRequestParam();
+
+                $UserModel = new UserModel();
+                $user = $UserModel->getUserByUsername($params['username']);
+                if (!$user) {
+                    return $this->writeJson(10001,'用户不存在');
+                }
+
+                if(!password_verify ( $params['password'] , $user['password'])){
+                    return $this->writeJson(10001,'密码输入不正确!');
+                };
+                $token = uniqid().uniqid().$user['id'];
+
+                RedisPool::invoke(function (RedisObject $redis)use ($token,$user){
+                    $redis->set('Manage_token_'.$token,json_encode($user),36000);
+                });
+                return $this->writeJson(200, '登录成功',['token'=>$token]);
+            } else {
+                return $this->writeJson(10001, $validate->getError()->__toString(), 'fail');
+            }
+        }else{
+            return $this->render('Index/login');
+        }
+    }
+
+    /**
+     * <index> 首页
+     * @throws \EasySwoole\Component\Pool\Exception\PoolEmpty
+     * @throws \EasySwoole\Component\Pool\Exception\PoolException
+     */
+    public function index()
+    {
+        $token =  $this->request()->getRequestParam('token');
+
+        $RedisPool = RedisPool::defer();
+        $user = $RedisPool->get('Manage_token_'.$token);
+
+        if (!$user) {
+            $this->response()->redirect("/Manage/login");
+        }
+        return $this->render('Index/index',['token'=>$token,'user'=>$user]);
+    }
+}

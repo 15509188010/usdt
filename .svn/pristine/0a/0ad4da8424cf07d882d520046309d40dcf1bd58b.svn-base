@@ -1,0 +1,99 @@
+<?php
+/**
+ * Created by PhpStorm.
+ * User: Administrator
+ * Date: 2019/8/13 0013
+ * Time: 上午 9:25
+ */
+
+namespace App\HttpController\Manage;
+
+use App\HttpController\Base;
+use App\Utility\Pool\MysqlPool;
+use App\Utility\Pool\RedisPool;
+
+
+class Other extends  Base
+{
+    public $user = [];
+
+    protected function onRequest(?string $action): ?bool
+    {
+        $token = $this->request()->getRequestParam('token');
+        $RedisPool = RedisPool::defer();
+        $user = $RedisPool->get('Manage_token_' . $token);
+        if (!$user) {
+            $this->response()->redirect("/Manage/login");
+            return false;
+        }
+        $this->user = json_decode($user, true);
+        return true;
+    }
+
+    /**
+     * <method> GET
+     * <notic> 公告页面
+     */
+    public function notic()
+    {
+        return $this->render('Other/notic');
+    }
+
+    /**
+     * <method> POST
+     * <noticList> 公告列表
+     * @return bool
+     * @throws \EasySwoole\Component\Pool\Exception\PoolEmpty
+     * @throws \EasySwoole\Component\Pool\Exception\PoolException
+     */
+    public function  noticList()
+    {
+        $db = MysqlPool::defer();
+        $list=$db->orderBy('datetime','DESC')->get('notic',null,'id,admin_id,title,content,datetime,status,fixed');
+        if (empty($list)){
+            return $this->writeJson(10004,'没有相关数据!');
+        }
+        $count=count($list);
+        foreach ($list as $k => &$v){
+            if ($v['status']==1){
+                $v['status']='上线';
+            }else{
+                $v['status']='下线';
+            }
+            if($v['fixed']==2){
+                $v['fixed']='<a style="color: #c12e2a">置顶</a>';
+            }else{
+                $v['fixed']='---';
+            }
+        }
+        return $this->writeJson(0,'SUCCESS',$list,$count);
+    }
+
+    /**
+     * OverWrite
+     * @param int $statusCode
+     * @param null $msg
+     * @param null $result
+     * @param int $count
+     * @return bool
+     */
+    protected function writeJson($statusCode = 200, $msg = null, $result = null, $count = 0)
+    {
+        if (!$this->response()->isEndResponse()) {
+            $data = [
+                "code" => $statusCode,
+                "data" => $result,
+                "msg" => $msg,
+                "count" => $count,
+            ];
+            $this->response()->write(json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+            $this->response()->withHeader('Content-type', 'application/json;charset=utf-8');
+            $this->response()->withHeader('Access-Control-Allow-Origin', "*");
+            $this->response()->withStatus(200);//http响应码
+            return true;
+        } else {
+            return false;
+        }
+    }
+
+}

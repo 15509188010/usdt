@@ -1,0 +1,302 @@
+<?php
+/**
+ * Created by PhpStorm.
+ * User: Double-Ming
+ * Date: 2019/08/02
+ * Email: 1023125136@qq.com
+ */
+
+
+namespace App\HttpController;
+
+use App\Model\UsdtUserModel;
+use App\Utility\Pool\RedisObject;
+use App\Utility\Pool\RedisPool;
+use App\Utility\BaoSms;
+use App\Utility\Pool\MysqlPool;
+
+use EasySwoole\Http\Message\Status;
+use EasySwoole\Validate\Validate;
+use EasySwoole\Component\Timer;
+use EasySwoole\EasySwoole\Swoole\Task\TaskManager;
+
+
+/**
+ * Class Index
+ * @package App\HttpController
+ */
+class Index extends Base
+{
+
+    /**
+     * OverWrite
+     * <onRequest> 此方法可用于请求过滤
+     * @param string|null $action
+     * @return bool|null
+     */
+    protected function onRequest(?string $action): ?bool
+    {
+        $onlyPost = ['upload', 'register', 'sendSms', 'login','forgetPass'];//需要POST添加到此处
+        if (in_array($this->getActionName(), $onlyPost)) {
+            if ($this->request()->getMethod() == 'POST') {
+                return true;
+            } else {
+                $this->writeJson(10004, '请使用POST请求');
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * <method> POST
+     * <login> 用户登录
+     * @params <String> username
+     * @params <String> password
+     * @return bool
+     * @throws \EasySwoole\Component\Pool\Exception\PoolEmpty
+     * @throws \EasySwoole\Component\Pool\Exception\PoolException
+     * @throws \Throwable
+     */
+    public function login()
+    {
+        $validate = new Validate();
+        $validate->addColumn('username')->required('用户名必填');
+        $validate->addColumn('password')->required('密码必填');
+
+        if ($this->validate($validate)) {
+            $params = $this->request()->getRequestParam();
+
+            $UserModel = new UsdtUserModel();
+            $user = $UserModel->getUserByUsername($params['username']);
+
+            if (!$user) {
+                return $this->writeJson(10004, '用户不存在');
+            }
+            if (!password_verify($params['password'], $user['password'])) {
+                return $this->writeJson(10004, '密码输入不正确!');
+            };
+
+            $token = uniqid() . uniqid() . $user['id'];
+            RedisPool::invoke(function (RedisObject $redis) use ($token, $user) {
+                $redis->set('User_token_' . $token, json_encode($user), 36000);
+            });
+            return $this->writeJson(Status::CODE_OK, '登录成功', ['token' => $token]);
+        } else {
+            return $this->writeJson(10004, $validate->getError()->__toString(), 'fail');
+        }
+    }
+
+    /**
+     * <method> POST
+     * <register> 用户注册
+     * @return array|bool|null
+     * @throws \EasySwoole\Component\Pool\Exception\PoolEmpty
+     * @throws \EasySwoole\Component\Pool\Exception\PoolException
+     */
+    public function register()
+    {
+        $validate = new Validate();
+        $validate->addColumn('code')->required('验证码必填');
+        $validate->addColumn('username')->required('用户名必填');
+        $validate->addColumn('password')->required('密码必填');
+        $validate->addColumn('paypassword')->required('支付密码必填');
+
+        if ($this->validate($validate)) {
+            $params = $this->request()->getRequestParam();
+
+            $RedisPool = RedisPool::defer();
+            $codeCache = $RedisPool->get('Code' . $params['username']);
+
+            if ($codeCache != $params['code']) {
+                return $this->writeJson(10004, '验证码错误', $codeCache);
+            }
+
+            $UserModel = new UsdtUserModel();
+            $user = $UserModel->getUserByUsername($params['username']);
+            if ($user) {
+                return $this->writeJson(10004, '用户名已存在');
+            }
+
+            $data = [
+                'username' => $params['username'],
+                'password' => password_hash($params['password'], PASSWORD_DEFAULT),//单向散列值
+                'pay_pass' => password_hash($params['paypassword'], PASSWORD_DEFAULT),//支付密码
+            ];
+
+            $user_id = $UserModel->insertUser($data);
+            if (!$user_id) {
+                return $this->json(10001, '注册失败');
+            }
+
+            $db = MysqlPool::defer();
+            $up=[
+                'ad_dmr'=>$this->setDmrAd($user_id),
+            ];
+            $db->where('id',$user_id)->update('usdt_user',$up);
+            $db->insert('user_money',['uid'=>$user_id]);
+
+            return $this->writeJson(Status::CODE_OK, '注册成功', ['username' => $params['username']]);
+        } else {
+            return $this->writeJson(10004, $validate->getError()->__toString(), 'fail');
+        }
+    }
+
+
+    /**
+     * <method> POST
+     * <sendSms> 发送验证码
+     * @params <String> username
+     * #return json|null
+     */
+    public function sendSms()
+    {
+        $validate = new Validate();
+        $validate->addColumn('username')->required('用户名必填');
+        if ($this->validate($validate)) {
+            $params = $this->request()->getRequestParam();
+            $key = $params['username'];
+            //由于短信宝太垃圾,太慢,没办了,投递异步任务喽
+            TaskManager::async(function () use ($key){
+                $num = mt_rand(000000, 999999);
+                $content = '【DMR】您的验证码为' . $num . '，在5分钟内有效 !';
+                $result = BaoSms::sms($key,$content);
+                RedisPool::invoke(function (RedisObject $redis) use ($key, $num) {
+                    $redis->set('Code' . $key, $num, 60 * 5);
+                });
+            });
+            return $this->writeJson(Status::CODE_OK, '验证码发送成功,请在5分钟内完成验证 !');
+        } else {
+            return $this->writeJson(10004, $validate->getError()->__toString(), 'fail');
+        }
+    }
+
+    /**
+     * <method> POST
+     * <forgetPass> 忘记密码
+     * @params code=>验证码 username=>用户名 refpassword=>新密码
+     * @return bool
+     * @throws \EasySwoole\Component\Pool\Exception\PoolEmpty
+     * @throws \EasySwoole\Component\Pool\Exception\PoolException
+     */
+    public  function  forgetPass()
+    {
+        $validate = new Validate();
+        $validate->addColumn('code')->required('验证码必填');
+        $validate->addColumn('username')->required('用户名必填');
+        $validate->addColumn('refpassword')->required('新密码必填');
+        if ($this->validate($validate)){
+            $params = $this->request()->getRequestParam();
+
+            $RedisPool = RedisPool::defer();
+            $codeCache = $RedisPool->get('Code' . $params['username']);
+
+            if ($codeCache != $params['code']) {
+                return $this->writeJson(10004, '验证码错误', $codeCache);
+            }
+
+            $UserModel = new UsdtUserModel();
+            $user = $UserModel->getUserByUsername($params['username']);
+            if (empty($user)){
+                return $this->writeJson(10004,'用户尚未注册!');
+            }
+            $save=[
+                'password'=>password_hash($params['refpassword'], PASSWORD_DEFAULT),//新密码
+            ];
+            $res=$UserModel->saveData($save,$params['username']);
+            if ($res==false){
+                return $this->writeJson(10004,'密码修改失败!');
+            }
+            return $this->writeJson(Status::CODE_OK,'密码修改成功');
+        }else{
+            return $this->writeJson(10004, $validate->getError()->__toString(), 'fail');
+        }
+    }
+
+    /**
+     * 用于外部调用定时器
+     * @return String
+     * @<Action> test
+     */
+    public function getUsdtPrice()
+    {
+        //投递异步任务
+        TaskManager::async(function () {
+            Timer::getInstance()->loop(1000 * 10, function () {
+                $result = file_get_contents('https://otc-api.eiijo.cn/v1/data/trade-market?coinId=2&currency=1&tradeType=sell&currPage=1&payMethod=0&country=37&blockType=general&online=1&range=0&amount=');
+                var_dump($result);
+            });
+            return true;
+        }, function () {
+            echo "异步任务执行完毕...\n";
+        });
+        return $this->writeJson(Status::CODE_OK, 'SUCCESS,');
+    }
+
+    /**
+     * <method> POST
+     * <upload> 图片上传
+     * @params <Object> file
+     */
+    public function upload()
+    {
+        $request = $this->request();
+        $img_file = $request->getUploadedFile('file');
+
+        if (!$img_file) {
+            return $this->writeJson(10004, '请选择上传的文件');
+        }
+
+        if ($img_file->getSize() > 1024 * 1024 * 5) {
+            return $this->writeJson(10004, '图片不能大于5M！');
+        }
+
+        $MediaType = explode("/", $img_file->getClientMediaType());
+        $MediaType = $MediaType[1] ?? "";
+        if (!in_array($MediaType, ['png', 'jpg', 'gif', 'jpeg', 'pem', 'ico'])) {
+            return $this->writeJson(10004, '文件类型不正确！');
+        }
+        $month = date('Ymd') . '/';
+        $path = '/Static/upload/' . $month;
+        $dir = EASYSWOOLE_ROOT . '/Static/upload/' . $month;
+
+        $fileName = uniqid() . $img_file->getClientFileName();
+
+        if (!is_dir($dir)) {
+            mkdir($dir, 0777, true);
+        }
+
+        $flag = $img_file->moveTo($dir . $fileName);
+
+        $data = [
+            'name' => $fileName,
+            'src' => $path . $fileName,
+        ];
+
+        if ($flag) {
+            return $this->writeJson(Status::CODE_OK, '上传成功', $data);
+        } else {
+            return $this->writeJson(10004, '上传失败');
+        }
+    }
+
+    /**
+     * 生成dmr地址
+     * @param $uid
+     * @return string
+     */
+    private function setDmrAd($uid)
+    {
+        return date('M-D').'-'.$this->randStr(3).'-'.$this->randStr(3).'-'.$uid;
+    }
+
+    /**
+     * @param int $len
+     * @return bool|string
+     */
+    private function randStr($len = 4)
+    {
+        $str = "0123456789qwertyuiopasdfghjklzxcvbnm";
+        return substr(str_shuffle($str), 0, $len);
+    }
+}

@@ -1,0 +1,783 @@
+<?php
+/**
+ * Created by PhpStorm.
+ * User: Double-Ming
+ * Date: 2019/08/02
+ * Email: 1023125136@qq.com
+ */
+
+namespace App\HttpController;
+
+
+use EasySwoole\Validate\Validate;
+use App\Utility\Pool\MysqlPool;
+use App\Utility\Pool\RedisPool;
+use EasySwoole\Http\Message\Status;
+use App\Model\UsdtUserModel;
+use App\Model\MoneyChangeModel;
+use App\Model\UsdtOrderModel;
+use App\Utility\ReverseProxyTools;
+
+
+
+/**
+ * Class Index
+ * @package App\HttpController
+ */
+class User extends Base
+{
+    public $user = [];//用户信息
+
+    /**
+     * OverWrite
+     * <onRequest> 此方法可用于请求过滤
+     * @param string|null $action
+     * @return bool|null
+     */
+    protected function onRequest(?string $action): ?bool
+    {
+        $onlyPost = ['editPass', 'editPayPass', 'setAddress', 'setUsdtInto', 'setUsdtOut', 'setDmrOut','getNotice','checkPassword'];//需要POST添加到此处
+        if (in_array($this->getActionName(), $onlyPost)) {
+            if ($this->request()->getMethod() == 'POST') {
+                if ($this->checkToken() == false) {
+                    $this->writeJson(10004, 'token验证失败,请登录!');
+                    return false;
+                }
+                $this->user = $this->checkToken();
+                return true;
+            } else {
+                $this->writeJson(10004, '请使用POST请求');
+                return false;
+            }
+        } else {//GET
+            if ($this->checkToken() == false) {
+                $this->writeJson(10004, 'token验证失败,请登录!');
+                return false;
+            }
+            $this->user = $this->checkToken();
+            return true;
+        }
+    }
+
+
+
+    /**
+     * PRIVATE
+     * <checkToken> 检验token
+     */
+    private function checkToken()
+    {
+        $token = $this->request()->getRequestParam('token');
+        $RedisPool = RedisPool::defer();
+        $user = $RedisPool->get('User_token_' . $token);
+        if (!$user) {
+            return false;
+        }
+        $user = json_decode($user, true);
+        return $user;
+    }
+
+
+    /**
+     * <method> GET
+     * <dmrFeatures> 获取dmr二维码
+     * @return bool
+     * @throws \EasySwoole\Component\Pool\Exception\PoolEmpty
+     * @throws \EasySwoole\Component\Pool\Exception\PoolException
+     */
+    public function  dmrFeatures()
+    {
+        $db = MysqlPool::defer();
+        $res=$db->where('id',$this->user['id'])->getOne('usdt_user','ad_dmr');
+        if (empty($res)){
+            return $this->writeJson(10004,'获取地址失败!');
+        }
+        $address='http://'.ReverseProxyTools::currentPublicIPAddress().'?code='.$res['ad_dmr'];
+        $data=[
+            'address'=>$address,//二维码地址
+            'ad_dmr'=>$res['ad_dmr'],//dmr地址
+        ];
+        return $this->writeJson(Status::CODE_OK,'SUCCESS',$data);
+    }
+
+    /**
+     * <method> GET
+     * <getBalance> 账户总览
+     * @return bool
+     * @throws \EasySwoole\Component\Pool\Exception\PoolEmpty
+     * @throws \EasySwoole\Component\Pool\Exception\PoolException
+     */
+    public function  getBalance()
+    {
+        $db = MysqlPool::defer();
+        $res=$db->where('uid',$this->user['id'])->getOne('user_money','usdt,dmr,d_frozen,u_onway');
+
+        if(empty($res)){
+            return $this->writeJson(10004,'没有找到你的账户!');
+        }
+
+        $data=[
+            'all_dmr'=>bcadd($res['dmr'],$res['d_frozen'],4),//总dmr
+            'dmr'=>$res['dmr'],//可用dmr
+            'd_frozen'=>$res['d_frozen'],//冻结dmr
+            'usdt'=>$res['usdt'],//usd总剩余
+            'u_onway'=>$res['u_onway'],//(在途)usdt转出待确认
+        ];
+
+        return $this->writeJson(Status::CODE_OK,'SUCCESS',$data);
+
+    }
+
+    /**
+     * <method> POST
+     * <checkPassword> 验证支付密码
+     * @return bool
+     * @throws \Exception
+     */
+    public function  checkPassword()
+    {
+        $params = $this->request()->getRequestParam();
+        if (empty($params['pay_pass'])){
+            return $this->writeJson(10004,'支付密码不能为空!');
+        }
+        $UserModel = new UsdtUserModel();
+        $user = $UserModel->getUserByUsername($this->user['username']);
+        if (!$user) {
+            return $this->writeJson(10004, '用户不存在');
+        }
+        if (!password_verify($params['pay_pass'], $user['pay_pass'])) {
+            return $this->writeJson(10004, '支付密码输入不正确!');
+        };
+        return $this->writeJson(Status::CODE_OK,'SUCCESS');
+    }
+
+    /**
+     * <method> POST
+     * <forgetPass> 修改密码知道原密码
+     * @params password=>原密码 refpassword=>新密码
+     * @return bool
+     * @throws \Exception
+     */
+    public function editPass()
+    {
+        $validate = new Validate();
+        $validate->addColumn('password')->required('原密码必填');
+        $validate->addColumn('refpassword')->required('新密码必填');
+        if ($this->validate($validate)) {
+            $params = $this->request()->getRequestParam();
+            $UserModel = new UsdtUserModel();
+            $user = $UserModel->getUserByUsername($this->user['username']);
+            if (!$user) {
+                return $this->writeJson(10004, '用户不存在');
+            }
+            if (!password_verify($params['password'], $user['password'])) {
+                return $this->writeJson(10004, '原密码输入不正确!');
+            };
+            $save = [
+                'password' => password_hash($params['refpassword'], PASSWORD_DEFAULT),//新密码
+            ];
+            $res = $UserModel->saveData($save, $this->user['username']);
+            if ($res == false) {
+                return $this->writeJson(10004, '密码修改失败!');
+            }
+            return $this->writeJson(Status::CODE_OK, '密码修改成功');
+        } else {
+            return $this->writeJson(10004, $validate->getError()->__toString(), 'fail');
+        }
+    }
+
+
+    /**
+     * <method> POST
+     * <editPayPass> 修改支付密码
+     * @params pay_pass=>原支付密码 ref_pay_pass=>新支付密码
+     * @return bool
+     * @throws \Exception
+     */
+    public function editPayPass()
+    {
+        $validate = new Validate();
+        $validate->addColumn('pay_pass')->required('原支付密码必填');
+        $validate->addColumn('ref_pay_pass')->required('新支付密码必填');
+        if ($this->validate($validate)) {
+            $params = $this->request()->getRequestParam();
+            $UserModel = new UsdtUserModel();
+            $user = $UserModel->getUserByUsername($this->user['username']);
+            if (!$user) {
+                return $this->writeJson(10004, '用户不存在');
+            }
+            if (!password_verify($params['pay_pass'], $user['pay_pass'])) {
+                return $this->writeJson(10004, '原支付密码输入不正确!');
+            };
+            $save = [
+                'pay_pass' => password_hash($params['ref_pay_pass'], PASSWORD_DEFAULT),//新支付密码
+            ];
+            $res = $UserModel->saveData($save, $this->user['username']);
+            if ($res == false) {
+                return $this->writeJson(10004, '支付密码修改失败!');
+            }
+            return $this->writeJson(Status::CODE_OK, '支付密码修改成功');
+        } else {
+            return $this->writeJson(10004, $validate->getError()->__toString(), 'fail');
+        }
+    }
+
+
+    /**
+     * <method> GET
+     * <getUserInfo> 获取用户信息
+     * @return bool
+     * @throws \Exception
+     */
+    public function getUserInfo()
+    {
+        $UserModel = new UsdtUserModel();
+        $user = $UserModel->getUserByUsername($this->user['username']);
+        if (!$user) {
+            return $this->writeJson(10004, '用户不存在');
+        }
+        return $this->writeJson(Status::CODE_OK, 'SUCCESS', $user);
+    }
+
+    /**
+     * <method> POST
+     * <setAddress> 设置USDT地址
+     * @params ad_usdt=>地址
+     * @return bool
+     * @throws \Exception
+     */
+    public function setAddress()
+    {
+        $address = $this->request()->getRequestParam('ad_usdt');
+        if (empty($address)) {
+            return $this->writeJson(10004, 'USDT地址必填');
+        }
+        $UserModel = new UsdtUserModel();
+        $user = $UserModel->getUserByUsername($this->user['username']);
+        if (!$user) {
+            return $this->writeJson(10004, '用户不存在');
+        }
+        $save = [
+            'ad_usdt' => $address, //usdt地址
+        ];
+
+        $res = $UserModel->saveData($save, $this->user['username']);
+        if ($res == false) {
+            return $this->writeJson(10004, 'USDT地址设置失败 !');
+        }
+        return $this->writeJson(Status::CODE_OK, 'USDT地址设置成功 !', $save);
+    }
+
+    /**
+     * <method> GET
+     * <getDmrWall> 获取钱包Dmr
+     * @return bool
+     * @throws \EasySwoole\Component\Pool\Exception\PoolEmpty
+     * @throws \EasySwoole\Component\Pool\Exception\PoolException
+     */
+    public function getDmrWall()
+    {
+        $db = MysqlPool::defer();
+        $data = [];
+        $wall = $db->where('uid', $this->user['id'])->get('user_money', null, 'dmr,d_frozen');
+
+        $list = $db->where('uid', $this->user['id'])->where('type', 2)
+            ->orderBy('datetime', 'DESC')->get('money_change', [0, 5], 'datetime,money,lx');
+        if (!empty($list)) {
+            foreach ($list as $k => &$v) {
+                $v['datetime'] = date('m-d H:i', strtotime($v['datetime']));
+                if ($v['lx'] == 1) {
+                    $v['money'] = '+' . $v['money'];
+                    $v['der'] = 'DMR转入';
+                } else {
+                    $v['money'] = '-' . $v['money'];
+                    $v['der'] = 'DMR转出';
+                }
+            }
+        }
+        $data = [
+            'money' => empty($wall) ? [] : $wall[0],
+            'list' => empty($list) ? [] : $list,
+        ];
+        return $this->writeJson(Status::CODE_OK, 'SUCCESS', $data);
+
+    }
+
+    /**
+     * <method> GET
+     * <getUsdtWall> 获取钱包Usdt
+     * @return bool
+     * @throws \EasySwoole\Component\Pool\Exception\PoolEmpty
+     * @throws \EasySwoole\Component\Pool\Exception\PoolException
+     */
+    public function getUsdtWall()
+    {
+        $db = MysqlPool::defer();
+        $data = [];
+        $wall = $db->where('uid', $this->user['id'])->get('user_money', null, 'usdt,u_frozen');
+
+        $list = $db->where('uid', $this->user['id'])->where('type', 1)
+            ->orderBy('datetime', 'DESC')->get('money_change', [0, 5], 'datetime,money,lx');
+        if (!empty($list)) {
+            foreach ($list as $k => &$v) {
+                $v['datetime'] = date('m-d H:i', strtotime($v['datetime']));
+                if ($v['lx'] == 1) {
+                    $v['money'] = '+' . $v['money'];
+                    $v['der'] = 'USDT转入';
+                } else {
+                    $v['money'] = '-' . $v['money'];
+                    $v['der'] = 'USDT转出';
+                }
+            }
+        }
+        $data = [
+            'money' => empty($wall) ? [] : $wall[0],
+            'list' => empty($list) ? [] : $list,
+        ];
+        return $this->writeJson(Status::CODE_OK, 'SUCCESS', $data);
+
+    }
+
+    /**
+     * <method> GET
+     * <getDmrLog> 获取dmr明细
+     * @params lx=>不传查所有 lx=>1 转入 lx=>2 转出
+     * @return bool
+     * @throws \EasySwoole\Mysqli\Exceptions\ConnectFail
+     * @throws \EasySwoole\Mysqli\Exceptions\OrderByFail
+     * @throws \EasySwoole\Mysqli\Exceptions\PrepareQueryFail
+     * @throws \Throwable
+     */
+    public function getDmrLog()
+    {
+        $lx = empty($this->request()->getRequestParam('lx')) ? null : $this->request()->getRequestParam('lx');
+        $moneyChange = new MoneyChangeModel();
+
+        $data = $moneyChange->getDmrLog($this->user['id'], $lx);
+
+        return $this->writeJson(Status::CODE_OK, 'SUCCESS', $data);
+
+    }
+
+    /**
+     * <method> GET
+     * <getUsdtLog> 获取usdt明细
+     * @params lx=>不传查所有 lx=>1 转入 lx=>2 转出
+     * @return bool
+     * @throws \EasySwoole\Mysqli\Exceptions\ConnectFail
+     * @throws \EasySwoole\Mysqli\Exceptions\OrderByFail
+     * @throws \EasySwoole\Mysqli\Exceptions\PrepareQueryFail
+     * @throws \Throwable
+     */
+    public function getUsdtLog()
+    {
+        $lx = empty($this->request()->getRequestParam('lx')) ? null : $this->request()->getRequestParam('lx');
+        $moneyChange = new MoneyChangeModel();
+
+        $data = $moneyChange->getUsdtLog($this->user['id'], $lx);
+
+        return $this->writeJson(Status::CODE_OK, 'SUCCESS', $data);
+    }
+
+
+    /**
+     * <method> POST
+     * <setUsdtInto> usdt转入申请
+     * @params ad_usdt=>转入地址 number=>转入数量 path=>转入凭证
+     * @return bool
+     * @throws \Exception
+     */
+    public function setUsdtInto()
+    {
+        $validate = new Validate();
+        $validate->addColumn('ad_usdt')->required('转入地址必填');
+        $validate->addColumn('number')->required('转入数量必填');
+        $validate->addColumn('path')->required('必须上传转入凭证');
+        if ($this->validate($validate)) {
+            $params = $this->request()->getRequestParam();
+            if (empty($params['ad_usdt'])){
+                return $this->writeJson(10004,'转入地址不能为空!');
+            }
+            if (empty($params['path'])){
+                return $this->writeJson(10004,'凭证地址非法!');
+            }
+            $orderid = $this->createId($this->user['id'], $params['number']);//订单号
+            $add = [
+                'uid' => $this->user['id'],
+                'ad_usdt' => $params['ad_usdt'],
+                'usdt' => $params['number'],
+                'path' => $params['path'],
+                'datetime' => date('Y-m-d H:i:s'),
+                'orderid' => $orderid,
+                'lx' => 1,//转入
+            ];
+            $UsdtOrder = new UsdtOrderModel();
+            $result = $UsdtOrder->insertUsdtOrder($add);
+            if ($result == null) {
+                return $this->writeJson(10004, '转入时出现错误,请重试!');
+            }
+            return $this->writeJson(Status::CODE_OK, 'SUCCESS', ['number' => $params['number'], 'order_id' => $orderid]);
+        } else {
+            return $this->writeJson(10004, $validate->getError()->__toString(), 'fail');
+        }
+    }
+
+    /**
+     * <method> POST
+     * <setUsdtOut> usdt转出
+     * @params ad_usdt=>转出地址 number=>转出数量
+     * @return bool
+     * @throws \EasySwoole\Component\Pool\Exception\PoolEmpty
+     * @throws \EasySwoole\Component\Pool\Exception\PoolException
+     */
+    public function setUsdtOut()
+    {
+        $validate = new Validate();
+        $validate->addColumn('ad_usdt')->required('转出地址必填');
+        $validate->addColumn('number')->required('转出数量必填');
+        if ($this->validate($validate)) {
+            $params = $this->request()->getRequestParam();
+            //检查用户转出金额
+            $db = MysqlPool::defer();
+            $money = $db->where('uid', $this->user['id'])->getOne('user_money', 'usdt,u_onway');
+
+            if (empty($money)) {
+                return $this->writeJson(10004, '系统发生错误,没有找到用户账户!');
+            }
+            if ($money['usdt'] < $params['number']) {
+                return $this->writeJson(10004, "您的USDT余额{$money['usdt']},可用不足!");
+            }
+            //开启事务
+            $db->startTransaction();
+            //减用户usdt,增加在途
+            $up = [
+                'usdt' => bcsub($money['usdt'], $params['number'], 4),
+                'u_onway' => bcadd($money['u_onway'], $params['number'], 4),
+            ];
+            $res1 = $db->where('uid', $this->user['id'])->update('user_money', $up);
+            //添加订单
+            $orderid = $this->createId($this->user['id'], $params['number']);//订单号
+            $add = [
+                'uid' => $this->user['id'],
+                'ad_usdt' => $params['ad_usdt'],
+                'usdt' => $params['number'],
+                'datetime' => date('Y-m-d H:i:s'),
+                'orderid' => $orderid,
+                'lx' => 2,//转出
+            ];
+            $res2 = $db->insert('usdt_order', $add);
+            if ($res1 && $res2) {
+                $db->commit();
+                return $this->writeJson(Status::CODE_OK, 'SUCCESS', ['number' => $params['number'], 'orderid' => $orderid]);
+            } else {
+                $db->rollback();
+                return $this->writeJson(10004, '转出操作失败,请重试!');
+            }
+        } else {
+            return $this->writeJson(10004, $validate->getError()->__toString(), 'fail');
+        }
+    }
+
+    /**
+     * <method> POST
+     * <setDmrOut> Dmr转出至对方账户,实时到账
+     * @params ad_dmr=>对方dmr地址 number=>转出的数量
+     * @return bool
+     * @throws \EasySwoole\Component\Pool\Exception\PoolEmpty
+     * @throws \EasySwoole\Component\Pool\Exception\PoolException
+     */
+    public function setDmrOut()
+    {
+        $validate = new Validate();
+        $validate->addColumn('ad_dmr')->required('转出地址必填');
+        $validate->addColumn('number')->required('转出数量必填');
+        if ($this->validate($validate)) {
+            $params = $this->request()->getRequestParam();
+            $db = MysqlPool::defer();
+            //判断是否是自己,和转出至账户是否存在
+            $exist = $db->where('ad_dmr',$params['ad_dmr'])->getOne('usdt_user','id');
+
+            if (empty($exist)) {
+                return $this->writeJson(10004, '地址不合法!');
+            }
+            $to_uid = $exist['id'];//对方账户id
+            if ($to_uid == $this->user['id']) {
+                return $this->writeJson(10004, '不能转给自己!');
+            }
+
+            $m_exist = $db->where('uid', $to_uid)->getOne('user_money','id');
+            if (empty($m_exist)) {
+                return $this->writeJson(10004, '没有找到有效的账户!');
+            }
+
+            //检查用户转出金额
+            $money = $db->where('uid', $this->user['id'])->getOne('user_money', 'dmr,d_frozen');
+            if (empty($money)) {
+                return $this->writeJson(10004, '系统发生错误,没有找到用户账户!');
+            }
+            $allMoney = bcadd($money['dmr'], $money['d_frozen'], 4);//总drm
+            if ($allMoney < $params['number']) {
+                return $this->writeJson(10004, "您的总DMR余额{$allMoney},可用不足!");
+            }
+            $data = [
+                'uid' => $this->user['id'],
+                'ad_dmr' => $params['ad_dmr'],
+                'number' => $params['number'],//总数量
+                'to_uid' => $to_uid,
+            ];
+            $ret = $this->addOrder($data);//订单逻辑
+            if ($ret==false){
+                return $this->writeJson(10004,'转出操作失败,转出数量会退回');
+            }
+
+            return $this->writeJson(Status::CODE_OK,'SUCCESS',['reg'=>"转出成功,转出数量{$params['number']}",'date'=>date('Y-m-d H:i:s')]);
+        } else {
+            return $this->writeJson(10004, $validate->getError()->__toString(), 'fail');
+        }
+    }
+
+    /**
+     * <addOrder> dmr核心功能,请不要轻易修改!!!
+     * @param $data
+     * @return bool
+     * @throws \EasySwoole\Component\Pool\Exception\PoolEmpty
+     * @throws \EasySwoole\Component\Pool\Exception\PoolException
+     */
+    private function addOrder($data)
+    {
+        /**
+         * 按转出给对方的总Dmr划分转出
+         * @方案一 => 优先冻结
+         * 冻结>=转出,全部冻结
+         * 冻结<转出,全部冻结+可用补全
+         * @方案二 => 优先可用
+         * 可用>=转出,全部可用
+         * 可用<转出,全部可用+冻结补全
+         * @自定义方案
+         *
+         */
+
+        //方案一
+        $db = MysqlPool::defer();
+        $money = $db->where('uid', $data['uid'])->getOne('user_money', 'dmr,d_frozen');
+        $to_money = $db->where('uid', $data['to_uid'])->getOne('user_money', 'dmr,d_frozen');//
+        $up = [];
+        if ($money['d_frozen'] >= $data['number']) {
+            //冻结足够
+            $up['d_frozen'] = bcsub($money['d_frozen'], $data['number'], 4);
+            $add_d_frozen = $data['number'];//冻结足够,使用就是转出的数量,订单用
+            $to_up = [
+                'd_frozen' => bcadd($to_money['d_frozen'], $data['number'], 4),//全部使用冻结给对方冻结
+            ];//对方账户
+        } else {
+            //冻结不足
+            //计算需要多少可用填充
+            $need = bcsub($data['number'], $money['d_frozen'], 4);
+            $up = [
+                'd_frozen' => '0.0000',
+                'dmr' => bcsub($money['dmr'], $need, 4),
+            ];
+            $add_d_frozen = $money['d_frozen'];//冻结不够,使用的是账户剩余所有冻结的数量
+            $to_up = [
+                'd_frozen' => bcadd($to_money['d_frozen'], $money['d_frozen'], 4),//全部冻结
+                'dmr' => bcadd($to_money['dmr'], $need, 4),//+可用
+            ];//对方账户
+        }
+        //开启事务
+        $db->startTransaction();
+        /****************************减用户账户*****************************/
+        $res1 = $db->where('uid', $data['uid'])->update('user_money', $up);
+
+        /*****************************创建订单******************************/
+        $orderid = $this->createId($data['uid'], $data['number']);//订单号
+        $add = [
+            'uid' => $data['uid'],
+            'to_uid' => $data['to_uid'],
+            'ad_dmr' => $data['ad_dmr'],
+            'd_frozen'=>$add_d_frozen,//冻结的数量
+            'dmr' => $data['number'],//转出的总dmr
+            'orderid' => $orderid,
+            'datetime' => date('Y-m-d H:i:s'),
+        ];
+
+        $res2 = $db->insert('dmr_order', $add);
+
+        /****************************增加对方账户dmr*************************/
+        $res3 = $db->where('uid', $data['to_uid'])->update('user_money', $to_up);
+
+        /*****************************写流水记录****************************/
+        if ($res1 && $res2 && $res3){
+
+
+            /***********************************转出方***************************/
+            $allMoney=bcadd($money['dmr'], $money['d_frozen'], 4);//总drm
+            $insert=[
+                'uid'=>$data['uid'],
+                'ymoney'=>$allMoney,//原总金额
+                'money'=>$data['number'],//变动金额
+                'gmoney'=> bcsub($allMoney, $data['number'], 4),//-
+                'datetime'=>date('Y-m-d H:i:s'),
+                'transid'=>'OUT'.$orderid,
+                'lx'=>2,//转出方
+                'type'=>2,//dmr
+                'orderid'=>'DMR'.$orderid,//订单号
+            ];//我的账户
+            $db->insert('money_change',$insert);
+
+            /*******************************入账方*********************************/
+            $to_allMoney=bcadd($to_money['dmr'], $to_money['d_frozen'], 4);//总drm
+            $to_insert=[
+                'uid'=>$data['to_uid'],
+                'ymoney'=>$to_allMoney,//原总金额
+                'money'=>$data['number'],//变动金额
+                'gmoney'=>bcadd($to_allMoney,$data['number'] , 4),//+
+                'datetime'=>date('Y-m-d H:i:s'),
+                'transid'=>'INTO'.$orderid,
+                'lx'=>1,//进账方
+                'type'=>2,//dmr
+                'orderid'=>'DMR'.$orderid,//订单号
+            ];//对方账户
+            $db->insert('money_change',$to_insert);
+            //此处应该对流水记录进行检测,是否写入正常
+
+            $db->commit();
+            return true;
+        }else{
+            $db->rollback();
+            return false;
+        }
+
+    }
+
+
+    /**
+     * <method> POST
+     * <clearToken> 清除令牌
+     * @params <String> token
+     * @throws \EasySwoole\Component\Pool\Exception\PoolEmpty
+     * @throws \EasySwoole\Component\Pool\Exception\PoolException
+     */
+    public function clearToken()
+    {
+        $token = $this->request()->getRequestParam('token');
+        $RedisPool = RedisPool::defer();
+        $RedisPool->del('User_token_' . $token);
+
+        return $this->writeJson(Status::CODE_OK, 'SUCCESS');
+    }
+
+    /**
+     * <method> POST
+     * <getNotice> 获取公告
+     * @return bool
+     */
+    public function getNotice()
+    {
+        $data=[
+            'title'=>'USDT测试公告',
+            'content'=>'Tether（USDT）是基于在Bitcoin Blockchain上发布的Omni Layer Protocol的数字资产。其最大的特点就是能够以相等的美元回报，可以通过平台根据要求赎回。USDT可以被看作是一个像比特币一样的加密货币，只要他们的钱包是启用Omni Layer（Omni Wallet，Ambisafe或Holy Transaction），就可以让用户进行转账，存储和消费。为了复制货币的价值，Tether提供了一个在高度波动的Crypto市场存储价值的替代方案。',
+            'time'=>'2019-08-12 00:00:00',
+            'user'=>'管理员',
+        ];
+        return $this->writeJson(Status::CODE_OK,'SUCCESS',$data);
+    }
+
+    /**
+     * <method> GET
+     * <pushNotice> 首页滚动公告
+     * @return bool
+     * @throws \EasySwoole\Component\Pool\Exception\PoolEmpty
+     * @throws \EasySwoole\Component\Pool\Exception\PoolException
+     */
+    public function pushNotice()
+    {
+        $db = MysqlPool::defer();
+        $list=$db->where('status',1)->get('notic',[0,5],'title,content,datetime');
+        return $this->writeJson(Status::CODE_OK,'SUCCESS',$list);
+    }
+
+    /**
+     * <method> GET
+     * <getUsdtPrice> 获取usdt价格
+     * @return bool
+     * @throws \EasySwoole\Component\Pool\Exception\PoolEmpty
+     * @throws \EasySwoole\Component\Pool\Exception\PoolException
+     */
+    public function getUsdtPrice()
+    {
+        $RedisPool = RedisPool::defer();
+        $retime=$RedisPool->rPop('usdt-list');
+        $num=bcdiv($retime,$RedisPool->get('usdt_price_24'),4);
+        $rate=bcsub($num,1,4);//同比昨日涨幅
+        $RedisPool->rPush('usdt-list',$retime);
+        $list=$RedisPool->lRange('usdt-list',0,-1);
+
+        $ret=[
+            $list,
+            'price'=>$retime,
+            'usrate'=>$RedisPool->get('usrate'),
+            'rate'=>$rate,
+        ];
+
+       return $this->writeJson(Status::CODE_OK,'SUCCESS',$ret);
+    }
+
+    /**
+     * <method> GET
+     * <getDmrPrice> 获取dmr价格
+     * @return bool
+     * @throws \EasySwoole\Component\Pool\Exception\PoolEmpty
+     * @throws \EasySwoole\Component\Pool\Exception\PoolException
+     */
+    public function getDmrPrice()
+    {
+        $RedisPool = RedisPool::defer();
+        $retime=$RedisPool->rPop('dmr-list');
+        $num=bcdiv($retime,$RedisPool->get('dmr_price_24'),4);
+        $rate=bcsub($num,1,4);//同比昨日涨幅
+        $RedisPool->rPush('dmr-list',$retime);
+        $list=$RedisPool->lRange('dmr-list',0,-1);
+
+        $ret=[
+            $list,
+            'price'=>'7.00',
+            'usrate'=>$RedisPool->get('usrate'),
+            'rate'=>$rate,
+        ];
+        return $this->writeJson(Status::CODE_OK,'SUCCESS',$ret);
+    }
+
+
+    /**
+     * @param $the_time
+     * @return false|string
+     */
+    private function __time_tranx($the_time)
+    {
+        $now_time = time();
+        $dur = $now_time - $the_time;
+        if ($dur <= 0) {
+            $mas = '刚刚';
+        } else {
+            if ($dur < 60) {
+                $mas = $dur . '秒前';
+            } else {
+                if ($dur < 3600) {
+                    $mas = floor($dur / 60) . '分钟前';
+                } else {
+                    if ($dur < 86400) {
+                        $mas = floor($dur / 3600) . '小时前';
+                    } else {
+                        if ($dur < 259200) { //3天内
+                            $mas = floor($dur / 86400) . '天前';
+                        } else {
+                            $mas = date("Y-m-d H:i:s", $the_time);
+                        }
+                    }
+                }
+            }
+        }
+        return $mas;
+    }
+
+}

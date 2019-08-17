@@ -1,0 +1,58 @@
+CREATE TABLE `usdt_user`  (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `avatar` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '头像',
+  `nickname` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '昵称',
+  `username` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '用户名',
+  `password` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '用户密码',
+  `pay_pass` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '支付密码',
+  `balance`  decimal(15,4) NOT NULL DEFAULT '0.0000' COMMENT '余额',
+  `ad_usdt` varchar(255) DEFAULT NULL COMMENT 'usdt 地址',
+  `ad_dmr` varchar(255) UNIQUE DEFAULT NULL COMMENT 'dmr 地址',
+  `sign` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '签名',
+  `status` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT 'online' COMMENT 'online在线 hide隐身 offline离线',
+  PRIMARY KEY (`id`) USING BTREE
+) ENGINE = InnoDB AUTO_INCREMENT = 10000 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci COMMENT = '用户表' ROW_FORMAT = Dynamic;
+
+CREATE  TABLE `user_money` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `uid` int(11) UNIQUE NOT NULL COMMENT '用户id',
+  `usdt` decimal(15,4) NOT NULL DEFAULT '0.0000' COMMENT 'usdt余额',
+  `dmr` decimal(15,4) NOT NULL DEFAULT '0.0000' COMMENT 'dmr余额',
+  `u_frozen` decimal(15,4) NOT NULL DEFAULT '0.0000' COMMENT 'usdt冻结',
+  `d_frozen` decimal(15,4) NOT NULL DEFAULT '0.0000' COMMENT 'dmr冻结',
+  `u_onway` decimal(15,4) NOT NULL DEFAULT '0.0000' COMMENT 'usdt在途,主要用于转出',
+  `d_onway` decimal(15,4) NOT NULL DEFAULT '0.0000' COMMENT 'dmr在途,主要用于延迟到账',
+  PRIMARY KEY (`id`) USING BTREE
+) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci COMMENT = '账户表' ROW_FORMAT = Dynamic;
+
+CREATE TABLE  `money_change` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `uid` int(11) UNIQUE NOT NULL COMMENT '用户id',
+  `ymoney` decimal(15,4) NOT NULL DEFAULT '0.0000' COMMENT '原金额',
+  `money` decimal(15,4) NOT NULL DEFAULT '0.0000' COMMENT '变动金额',
+  `gmoney` decimal(15,4) NOT NULL DEFAULT '0.0000' COMMENT '变动后金额',
+  `datetime` datetime DEFAULT NULL COMMENT '修改时间',
+  `transid` varchar(50) DEFAULT NULL COMMENT '交易流水号',
+  `lx` tinyint(3) unsigned NOT NULL DEFAULT '1' COMMENT '类型 1转入 2转出',
+  `type` tinyint(3) unsigned NOT NULL DEFAULT '1' COMMENT '币种 1 usdt 2 dmr',
+  `orderid` varchar(50) DEFAULT NULL COMMENT '订单号',
+  `contentstr` varchar(255) DEFAULT NULL COMMENT '备注',
+  `t` int(4) NOT NULL DEFAULT '0' COMMENT '结算方式',
+  PRIMARY KEY (`id`) USING BTREE
+) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci COMMENT = '资金流动表' ROW_FORMAT = Dynamic;
+
+CREATE table  `usdt_order` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `uid` int(11)  NOT NULL COMMENT '用户id',
+  `ad_usdt` varchar(255) DEFAULT NULL COMMENT 'usdt地址',
+  `usdt` decimal(15,4) NOT NULL DEFAULT '0.0000' COMMENT '转入usdt数量',
+  `path` varchar(255) DEFAULT NULL COMMENT '凭证地址',
+  `orderid` varchar(50) DEFAULT NULL COMMENT '转入订单号',
+  `datetime` datetime DEFAULT NULL COMMENT '修改时间',
+  `contentstr` varchar(255) DEFAULT NULL COMMENT '备注',
+  `status` tinyint(3) unsigned NOT NULL DEFAULT '1' COMMENT '审核状态 1 未审核 2 审核通过',
+  `lx` tinyint(3) unsigned NOT NULL COMMENT '类型 1 转入 2 转出',
+  `operator` int(11) NOT NULL default '0' COMMENT '审核人员id',
+  PRIMARY KEY (`id`) USING BTREE
+) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci COMMENT = '资金流动表' ROW_FORMAT = Dynamic;
+

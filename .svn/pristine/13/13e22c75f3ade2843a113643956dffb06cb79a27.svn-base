@@ -1,0 +1,286 @@
+<?php
+/**
+ * Created by PhpStorm.
+ * User: Administrator
+ * Date: 2019/8/13 0013
+ * Time: 上午 9:25
+ */
+
+namespace App\HttpController\Manage;
+
+use App\HttpController\Base;
+use App\Utility\Pool\MysqlPool;
+use App\Utility\Pool\RedisPool;
+use EasySwoole\Http\Message\Status;
+use App\Model\UserModel;
+
+
+class Other extends Base
+{
+    public $user = [];
+
+    protected function onRequest(?string $action): ?bool
+    {
+        $token = $this->request()->getRequestParam('token');
+        $RedisPool = RedisPool::defer();
+        $user = $RedisPool->get('Manage_token_' . $token);
+        if (!$user) {
+            $this->response()->redirect("/Manage/login");
+            return false;
+        }
+        $this->user = json_decode($user, true);
+        return true;
+    }
+
+    /**
+     * <method> GET
+     * <notic> 公告页面
+     */
+    public function notic()
+    {
+        return $this->render('Other/notic');
+    }
+
+    /**
+     * <method> POST
+     * <noticList> 公告列表
+     * @return bool
+     * @throws \EasySwoole\Component\Pool\Exception\PoolEmpty
+     * @throws \EasySwoole\Component\Pool\Exception\PoolException
+     */
+    public function noticList()
+    {
+        $db = MysqlPool::defer();
+        $list = $db->orderBy('datetime', 'DESC')->get('notic', null, 'id,admin_id,title,content,datetime,status,fixed');
+        if (empty($list)) {
+            return $this->writeJson(10004, '没有相关数据!');
+        }
+        $count = count($list);
+        foreach ($list as $k => &$v) {
+            if ($v['status'] == 1) {
+                $v['status'] = '上线';
+            } else {
+                $v['status'] = '下线';
+            }
+            if ($v['fixed'] == 2) {
+                $v['fixed'] = '<a style="color: #c12e2a">置顶</a>';
+            } else {
+                $v['fixed'] = '---';
+            }
+        }
+        return $this->writeJson(0, 'SUCCESS', $list, $count);
+    }
+
+    /**
+     * <method> GET
+     * <addNotic> 添加公告页面
+     */
+    public function addNotic()
+    {
+        return $this->render('Other/addNotic');
+    }
+
+    /**
+     * <method> POST
+     * <saveNotic> 保存公告
+     * @return bool
+     * @throws \EasySwoole\Component\Pool\Exception\PoolEmpty
+     * @throws \EasySwoole\Component\Pool\Exception\PoolException
+     */
+    public function saveNotic()
+    {
+        $params = $this->request()->getRequestParam();
+        if (empty($params['title'])) {
+            return $this->writeJson(10004, '标题不能为空');
+        }
+        if (empty($params['memo'])) {
+            return $this->writeJson(10004, '内容不能为空');
+        }
+        $add = [
+            'title' => $params['title'],
+            'admin_id' => $this->user['id'],
+            'content' => $params['memo'],
+            'datetime' => date('Y-m-d H:i:s'),
+        ];
+        $db = MysqlPool::defer();
+        $res = $db->insert('notic', $add);
+        if ($res) {
+            return $this->writeJson(Status::CODE_OK, 'SUCCESS');
+        }
+        return $this->writeJson(10004, '操作失败');
+
+    }
+
+    /**
+     * <method> POST
+     * <delNotic> 删除公告
+     * @return bool
+     * @throws \EasySwoole\Component\Pool\Exception\PoolEmpty
+     * @throws \EasySwoole\Component\Pool\Exception\PoolException
+     */
+    public function delNotic()
+    {
+        $id = $this->request()->getRequestParam('id');
+        if (empty($id)) {
+            return $this->writeJson(10004, 'id不能为空');
+        }
+        $db = MysqlPool::defer();
+        $res = $db->where('id', $id)->delete('notic');
+        if ($res) {
+            return $this->writeJson(Status::CODE_OK, 'SUCCESS');
+        }
+        return $this->writeJson(10004, '操作失败');
+    }
+
+
+    /**
+     * <method> get
+     * <admin> 管理员列表
+     */
+    public function admin()
+    {
+        return $this->render('Other/admin');
+    }
+
+
+    /**
+     * <method> POST
+     * <adminList> 管理员列表
+     * @return bool
+     * @throws \EasySwoole\Component\Pool\Exception\PoolEmpty
+     * @throws \EasySwoole\Component\Pool\Exception\PoolException
+     */
+    public function adminList()
+    {
+        $db = MysqlPool::defer();
+        $list = $db->where('status', 'online')->get('user', null, 'id,username,status');
+        if (empty($list)) {
+            return $this->writeJson(10004, '没有相关数据');
+        }
+        $count = count($list);
+        foreach ($list as $k => &$v) {
+            $v['status'] = '正常';
+            $v['type'] = '超级管理员';
+        }
+        return $this->writeJson(0, 'SUCCESS', $list, $count);
+    }
+
+    /**
+     * <method> GET
+     * <editPass> 修改密码页面
+     */
+    public function editPass()
+    {
+        return $this->render('Other/editPass');
+    }
+
+    /**
+     * <method> POST
+     * <saveEditPass> 保存修改密码
+     * @return bool
+     * @throws \EasySwoole\Component\Pool\Exception\PoolEmpty
+     * @throws \EasySwoole\Component\Pool\Exception\PoolException
+     */
+    public function saveEditPass()
+    {
+        $password = $this->request()->getRequestParam('password');
+        $ref_password=$this->request()->getRequestParam('ref_password');
+        if (empty($password) || empty($ref_password)){
+            return $this->writeJson(10004,'缺少参数');
+        }
+        $UserModel = new UserModel();
+        $user = $UserModel->getUserByUsername($this->user['username']);
+        if (!$user) {
+            return $this->writeJson(10001,'用户不存在');
+        }
+
+        if(!password_verify ($password , $user['password'])){
+            return $this->writeJson(10001,'密码输入不正确!');
+        };
+
+        $up=[
+            'password'=>password_hash($ref_password, PASSWORD_DEFAULT),
+        ];
+        $db = MysqlPool::defer();
+        $res=$db->where('id',$this->user['id'])->update('user',$up);
+        if ($res){
+            return $this->writeJson(Status::CODE_OK,'操作成功');
+        }else{
+            return $this->writeJson(10004,'操作失败');
+        }
+    }
+
+    /**
+     * <method> GET
+     * <add> 增加管理员
+     */
+    public function add()
+    {
+        return $this->render('Other/add');
+    }
+
+
+    /**
+     * <method> POST
+     * <saveAdd> 保存添加的管理员
+     * @return bool
+     * @throws \EasySwoole\Component\Pool\Exception\PoolEmpty
+     * @throws \EasySwoole\Component\Pool\Exception\PoolException
+     */
+    public function saveAdd()
+    {
+
+        $username=$this->request()->getRequestParam('username');
+        $password=$this->request()->getRequestParam('password');
+        if (empty($username) || empty($password)){
+            return $this->writeJson(10004,'必要参数不能为空');
+        }
+        $db = MysqlPool::defer();
+        $exist=$db->where('username',$username)->getOne('user');
+        if (!empty($exist)){
+            return $this->writeJson(10004,'用户名已存在');
+        }
+        $add=[
+            'username'=>$username,
+            'password'=>password_hash($password, PASSWORD_DEFAULT),
+            'status'=>'online',
+            'nickname'=>'admin'.mt_rand(0000,9999),
+            'sign'=>'空空如也',
+        ];
+
+        $res=$db->insert('user',$add);
+        if ($res){
+            return $this->writeJson(Status::CODE_OK,'添加成功');
+        }
+        return $this->writeJson(10004,'添加失败');
+
+    }
+
+    /**
+     * OverWrite
+     * @param int $statusCode
+     * @param null $msg
+     * @param null $result
+     * @param int $count
+     * @return bool
+     */
+    protected function writeJson($statusCode = 200, $msg = null, $result = null, $count = 0)
+    {
+        if (!$this->response()->isEndResponse()) {
+            $data = [
+                "code" => $statusCode,
+                "data" => $result,
+                "msg" => $msg,
+                "count" => $count,
+            ];
+            $this->response()->write(json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+            $this->response()->withHeader('Content-type', 'application/json;charset=utf-8');
+            $this->response()->withHeader('Access-Control-Allow-Origin', "*");
+            $this->response()->withStatus(200);//http响应码
+            return true;
+        } else {
+            return false;
+        }
+    }
+
+}
